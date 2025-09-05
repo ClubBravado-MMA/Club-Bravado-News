@@ -16,7 +16,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        {/* ✅ Google AdSense loader script */}
+        {/* ✅ Google AdSense loader script (include only once) */}
         <Script
           id="adsense-script"
           async
