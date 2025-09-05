@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Safe default for images */
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
