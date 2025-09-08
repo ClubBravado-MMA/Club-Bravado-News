@@ -25,7 +25,7 @@ const TABS = [
   { label: "Boxing", key: "boxing" },
   { label: "Muay Thai", key: "muay" },
   { label: "BJJ", key: "bjj" },
-  { label: "Wrestling", key: "wrestling" }, // Amateur
+  { label: "Wrestling", key: "wrestling" },
 ] as const;
 
 type Kind = "all" | "news" | "videos";
@@ -59,12 +59,11 @@ export default function Home() {
     async (opts?: { page?: string; append?: boolean }) => {
       const u = new URL("/api/rss", location.origin);
       u.searchParams.set("tab", tabKey);
-      u.searchParams.set("kind", kind); // tell API exactly what we want
+      u.searchParams.set("kind", kind);
       if (opts?.page) u.searchParams.set("page", opts.page);
 
       const r = await fetch(u.toString(), { cache: "no-store" });
       const j = await r.json();
-
       const list: Article[] = j?.results ?? [];
 
       if (opts?.append) setItems((prev) => [...prev, ...list]);
@@ -152,6 +151,15 @@ export default function Home() {
   }, [nextPage, onLoadMore]);
 
   const onReload = () => setRefreshKey((k) => k + 1);
+
+  // Fallback image handler
+  const onImgError = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    if (img.dataset.fallback === "1") return; // already swapped
+    img.src = "/placeholder.jpg";
+    img.dataset.fallback = "1";
+    img.classList.add("bg-gray-50");
+  };
 
   return (
     <main className="mx-auto max-w-6xl p-6">
@@ -267,19 +275,19 @@ export default function Home() {
                       key={idx}
                       href={a.link}
                       target="_blank"
+                      rel="noopener noreferrer"
                       className="block rounded-2xl border p-4 hover:shadow"
                     >
-                      {img ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={img}
-                          alt=""
-                          loading="lazy"
-                          decoding="async"
-                          referrerPolicy="no-referrer"
-                          className="w-full h-40 md:h-48 object-cover rounded-xl mb-3"
-                        />
-                      ) : null}
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={img}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        referrerPolicy="no-referrer"
+                        onError={onImgError}
+                        className="w-full h-40 md:h-48 object-cover rounded-xl mb-3"
+                      />
                       <div className="flex items-center gap-2 text-xs opacity-80 mb-1">
                         {a.source ? (
                           <span className="px-2 py-0.5 rounded-full bg-gray-100 border">

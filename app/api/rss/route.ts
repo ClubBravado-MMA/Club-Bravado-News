@@ -2,46 +2,38 @@ import { NextResponse } from "next/server";
 import Parser from "rss-parser";
 
 /**
- * Performance-focused version:
- * - In-memory caching for whole responses (per tab+kind+page)
- * - In-memory caching for YouTube channel verification
- * - Lighter OpenGraph thumbnail scraping (first 3 per page)
- * - Timeouts and safer fallbacks
+ * Performance-tuned:
+ * - Response cache (2 min)
+ * - YouTube verify cache (24h)
+ * - Thumbnail OG scrape only first 1 per page
+ * - CDN Cache-Control headers for Vercel
  */
 
 const parser = new Parser({
   timeout: 12000,
-  headers: { "User-Agent": "ClubBravadoFeed/1.0 (+http://localhost)" },
+  headers: { "User-Agent": "ClubBravadoFeed/1.0 (+https://club-bravado-news.vercel.app)" },
 });
 
-/* -----------------------------
-   Article (News) Sources
-   ----------------------------- */
 const ARTICLE_SOURCES = {
   all: [
-    // MMA
     "https://mmajunkie.usatoday.com/feed",
     "https://www.mmafighting.com/rss/index.xml",
     "https://www.themaclife.com/feed/",
     "https://www.bloodyelbow.com/rss/index.xml",
     "https://www.sherdog.com/rss/news.xml",
-    // Boxing
     "https://www.boxingscene.com/rss.php",
     "https://www.badlefthook.com/rss/index.xml",
     "https://www.ringtv.com/feed/",
     "https://www.worldboxingnews.net/feed/",
     "https://fightnews.com/feed/",
     "https://www.boxingnewsonline.net/feed/",
-    // Muay Thai / ONE / Kickboxing
     "https://www.onefc.com/news/feed/",
     "https://www.muaythaicitizen.com/feed/",
     "https://www.wbcmuaythai.com/feed/",
-    // BJJ / Grappling
     "https://www.bjjheroes.com/feed",
     "https://www.jiujitsutimes.com/feed",
     "https://graciemag.com/en/feed/",
     "https://adccnews.com/feed/",
-    // Amateur Wrestling
     "https://news.theopenmat.com/feed/",
     "https://www.win-magazine.com/feed/",
     "https://theguillotine.com/feed/",
@@ -83,6 +75,7 @@ const ARTICLE_SOURCES = {
 } as const;
 
 type TabKey = keyof typeof ARTICLE_SOURCES;
+type Kind = "all" | "news" | "videos";
 
 type Item = {
   title: string;
@@ -93,11 +86,6 @@ type Item = {
   source?: string;
 };
 
-type Kind = "all" | "news" | "videos";
-
-/* -----------------------------
-   Official channel verification
-   ----------------------------- */
 const OFFICIAL_CHANNEL_NAME_KEYWORDS = [
   "UFC",
   "Professional Fighters League",
@@ -118,35 +106,24 @@ const OFFICIAL_CHANNEL_NAME_KEYWORDS = [
   "UWW",
 ];
 
-/* -----------------------------
-   Simple in-memory caches
-   ----------------------------- */
-
-// Whole-response cache (tab+kind+page) – 2 minutes default TTL
 const RESPONSE_TTL_MS = 2 * 60 * 1000;
-const responseCache = new Map<string, { expires: number; payload: any }>();
-
-// YouTube channel verification cache – 1 day TTL
 const YT_VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
+
+const responseCache = new Map<string, { expires: number; payload: any }>();
 const ytVerifyCache = new Map<string, { expires: number; ok: boolean }>();
 
-function getCached<T>(map: Map<string, { expires: number; [k: string]: any }>, key: string): T | null {
+function getCached<T>(map: Map<string, any>, key: string): T | null {
   const hit = map.get(key);
   if (!hit) return null;
   if (Date.now() > hit.expires) {
     map.delete(key);
     return null;
   }
-  return hit as unknown as T;
+  return hit as T;
 }
-
 function setCached(map: Map<string, any>, key: string, data: any, ttl: number) {
   map.set(key, { ...data, expires: Date.now() + ttl });
 }
-
-/* -----------------------------
-   Utilities
-   ----------------------------- */
 
 function removeNoise(item: Item): boolean {
   const t = `${item.title ?? ""} ${item.description ?? ""}`.toLowerCase();
@@ -154,20 +131,15 @@ function removeNoise(item: Item): boolean {
   return true;
 }
 
-// Allow full fights AND official KO/finish compilations
 function looksLikeAllowedVideo(a: Item): boolean {
   const t = `${a.title ?? ""} ${a.description ?? ""}`.toLowerCase();
-
   const fullFight = /(full\s*(fight|match|bout)|free\s*fight|full\s*event)/i.test(t);
   const koCompilation =
     /(ko|knockout|knockouts|finishes|finish)\s*(compilation|highlights|reel|collection|montage)?/i.test(t);
-
   const avoidFanEdit = /(fan\s*made|unofficial)/i.test(t);
-
   return (fullFight || koCompilation) && !avoidFanEdit;
 }
 
-// Find first YouTube link in HTML (iframe or anchor)
 function extractFirstYouTubeUrl(html?: string): string | undefined {
   if (!html) return;
   const m =
@@ -204,7 +176,6 @@ function pickImageFrom(item: any): string | undefined {
   if (item.enclosure?.url) return item.enclosure.url as string;
   if ((item as any)["media:content"]?.url) return (item as any)["media:content"].url;
   if ((item as any)["media:thumbnail"]?.url) return (item as any)["media:thumbnail"].url;
-
   const html: string =
     (item["content:encoded"] as string) || (item.content as string) || (item.summary as string) || "";
   const m = html?.match(/<img[^>]+src=["']([^"']+)["']/i);
@@ -237,7 +208,6 @@ async function getArticleFeedItems(url: string): Promise<Item[]> {
   }
 }
 
-// Verify a YouTube URL's channel is official (cached)
 async function isOfficialYouTubeChannel(videoUrl: string): Promise<boolean> {
   const key = normalizeUrl(videoUrl);
   const cached = getCached<{ ok: boolean }>(ytVerifyCache, key);
@@ -260,13 +230,12 @@ async function isOfficialYouTubeChannel(videoUrl: string): Promise<boolean> {
     setCached(ytVerifyCache, key, { ok }, YT_VERIFY_TTL_MS);
     return ok;
   } catch {
-    setCached(ytVerifyCache, key, { ok: false }, 5 * 60 * 1000); // cache failures for 5 min
+    setCached(ytVerifyCache, key, { ok: false }, 5 * 60 * 1000);
     return false;
   }
 }
 
-// Fill missing thumbnails from og:image/twitter:image (first FEW per page to reduce cost)
-async function fillOpenGraphImages(items: Item[], firstN = 3): Promise<Item[]> {
+async function fillOpenGraphImages(items: Item[], firstN = 1): Promise<Item[]> {
   const work = items.slice(0, firstN).map(async (a) => {
     if (a.image_url || !a.link) return a;
     try {
@@ -285,21 +254,19 @@ async function fillOpenGraphImages(items: Item[], firstN = 3): Promise<Item[]> {
   return items;
 }
 
-/* -----------------------------
-   Main handler with response cache
-   ----------------------------- */
-
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const tab = (url.searchParams.get("tab") || "all").toLowerCase() as TabKey;
   const page = parseInt(url.searchParams.get("page") || "0", 10);
   const kind = (url.searchParams.get("kind") || "all").toLowerCase() as Kind;
-  const pageSize = 20;
+  const pageSize = 16;
 
   const cacheKey = `resp:${tab}:${kind}:${page}`;
   const cached = getCached<{ payload: any }>(responseCache, cacheKey);
   if (cached) {
-    return NextResponse.json(cached.payload);
+    return NextResponse.json(cached.payload, {
+      headers: { "Cache-Control": "s-maxage=120, stale-while-revalidate=600" },
+    });
   }
 
   const articleFeeds = ARTICLE_SOURCES[tab] ?? ARTICLE_SOURCES.all;
@@ -307,7 +274,6 @@ export async function GET(req: Request) {
   let items: Item[] = [];
 
   if (kind === "videos") {
-    // 1) From articles: extract embedded YouTube links and verify
     const articleLists = await Promise.all(articleFeeds.map((f) => getArticleFeedItems(f)));
     const merged: Item[] = [];
     const seenArticle = new Set<string>();
@@ -318,10 +284,8 @@ export async function GET(req: Request) {
         if (!key || seenArticle.has(key)) continue;
         seenArticle.add(key);
 
-        // Must look like allowed video (full fight OR KO compilation)
         if (!looksLikeAllowedVideo(raw)) continue;
 
-        // Try to find embedded YouTube link quickly
         let yt = "";
         try {
           const res = await fetchWithTimeout(raw.link, 7000);
@@ -330,8 +294,6 @@ export async function GET(req: Request) {
         } catch {}
 
         if (!yt || !isYouTube(yt)) continue;
-
-        // Verify official channel (cached)
         const official = await isOfficialYouTubeChannel(yt);
         if (!official) continue;
 
@@ -343,7 +305,6 @@ export async function GET(req: Request) {
       }
     }
 
-    // Dedupe by normalized link and sort newest
     const byKey: Record<string, Item> = {};
     for (const m of merged) byKey[normalizeUrl(m.link)] = m;
     items = Object.values(byKey).sort((a, b) => {
@@ -352,9 +313,7 @@ export async function GET(req: Request) {
       return db - da;
     });
   } else {
-    // News / All
     const lists = await Promise.all(articleFeeds.map((f) => getArticleFeedItems(f)));
-
     const merged: Item[] = [];
     const seen = new Set<string>();
     for (const list of lists) {
@@ -373,13 +332,11 @@ export async function GET(req: Request) {
     });
   }
 
-  // Paginate
   const start = page * pageSize;
   const end = start + pageSize;
   let slice = items.slice(start, end);
 
-  // Thumbnails (smaller budget: first 3 only)
-  slice = await fillOpenGraphImages(slice, 3);
+  slice = await fillOpenGraphImages(slice, 1);
 
   const nextPage = end < items.length ? String(page + 1) : null;
 
@@ -390,8 +347,9 @@ export async function GET(req: Request) {
     results: slice,
   };
 
-  // Cache the response for 2 minutes
   setCached(responseCache, cacheKey, { payload }, RESPONSE_TTL_MS);
 
-  return NextResponse.json(payload);
+  return NextResponse.json(payload, {
+    headers: { "Cache-Control": "s-maxage=120, stale-while-revalidate=600" },
+  });
 }
